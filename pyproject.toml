@@ -1,0 +1,16 @@
+[tool.poetry]
+name = "whila"
+version = "0.1.0"
+description = ""
+authors = ["Brian Welman <brianallisterwelman@gmail.com>"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+Flask = "^3.0.2"
+google-generativeai = "^0.4.1"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
