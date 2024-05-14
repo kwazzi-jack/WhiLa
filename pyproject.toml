@@ -1,15 +1,14 @@
 [tool.poetry]
 name = "whila"
 version = "0.1.0"
-description = ""
+description = "WhiLa (Whisper-to-Latex) will be designed to connect various tools to deliver a much-needed service of converting spoken mathematics into LaTeX code. The software consists of a Speech-To-Text (STT) layer using OpenAI's whisper model and a Math-To-LaTeX (MTL) layer that converts this text output into usable LaTeX code to render the mathematics. This MTL layer will be a portable Large-Language Model (LLM) fine-tuned to convert spoken mathematics into correct and legible LaTeX code. The hope is that this software will be the start of bridging the gap between writing mathematics and the digital world. It will be aimed at education systems, but most importantly, its primary use is for those unable to utilise conventional techniques to write mathematics or LaTeX. With WhiLa, they will have the same opportunities as everyone else in STEM for writing and communicating math."
 authors = ["Brian Welman <brianallisterwelman@gmail.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.11"
-Flask = "^3.0.2"
-google-generativeai = "^0.4.1"
-
+python = "^3.10"
+whisper = "1.1.10"
+llama-index = "0.10.36"
 
 [build-system]
 requires = ["poetry-core"]
