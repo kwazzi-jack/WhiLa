@@ -8,6 +8,6 @@ Goal:
 Convert the input text in the given language into a grammatically and syntactically correct version of the STT text that can be placed into a document as a paragraph or section of a paragraph. The output must match the language given in the input and language tag, and you can only differ in sentence output for letters, words or phrases that are utterly incorrect in their current form. In this case, try to match as best as possible the meaning you can surmise from these parts of the words or sentence. Place your final result under a tag labelled as "OUTPUT:". 
 
 ---
-LANG: {{LANG_CODE}}
-INPUT: {{INPUT_TEXT}}
+LANG: {LANG_CODE}
+INPUT: {INPUT_TEXT}
 ---
