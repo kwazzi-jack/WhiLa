@@ -7,6 +7,8 @@ import ollama
 import yaml
 from ollama import ResponseError
 
+from whila.textify import Textifier
+
 # Load logging configuration
 with open("logging_config.yaml", "r") as f:
     config = yaml.safe_load(f.read())
@@ -14,6 +16,19 @@ with open("logging_config.yaml", "r") as f:
 
 logger = logging.getLogger("whila")
 
+if __name__ == "__main__":
+
+    # Create textifier
+    txty = Textifier()
+
+    # Setup gradio
+    import gradio as gr
+
+    gr.Interface(
+        fn=txty.textify,
+        inputs=gr.Audio(source="microphone", type="numpy"),
+        outputs=gr.Textbox(),
+    ).launch()
 
 # def _get_host_os():
 #     os_platform = platform.system()
