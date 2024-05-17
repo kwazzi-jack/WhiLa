@@ -11,6 +11,8 @@ whisper = "1.1.10"
 llama-index = "0.10.36"
 click = "^8.0.0"
 pyyaml = "^6.0.1"
+transformers = "^4.40.2"
+tensorflow = "^2.16.1"
 
 [build-system]
 requires = ["poetry-core"]
