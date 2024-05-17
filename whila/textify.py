@@ -38,19 +38,18 @@ class Textifier:
             print(f"Error during transcription: {e}")
             return ""
 
-    def _normalise_audio(self, raw_data):
+    def _normalise(self, raw_data):
         """
-        A function to normalize audio data by maximum value.
+        A function to normalise audio data by maximum value.
 
         Parameters:
-            raw_data: The raw audio data to be normalized.
+            raw_data: The raw audio data to be normalised.
 
         Returns:
-            The normalized raw audio data.
+            The normalised raw audio data.
         """
-        # Prevent division by zero
+        raw_data = raw_data.astype(np.float32)
         if np.max(np.abs(raw_data)) != 0:
-            raw_data = raw_data.astype(np.float32)
             raw_data /= np.max(np.abs(raw_data))
         return raw_data
 
@@ -65,7 +64,7 @@ class Textifier:
             The transcribed text from the audio data.
         """
         sample_rate, raw_data = raw_audio
-        raw_data = self._normalize_audio(raw_data)
+        raw_data = self._normalise(raw_data)
         return self._transcribe(sample_rate, raw_data)
 
     def to_gradio(self):
