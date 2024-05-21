@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 from transformers import pipeline
 
 DEFAULT_TTS_MODEL = "openai/whisper-medium.en"
@@ -13,11 +14,16 @@ class Textifier:
         Parameters:
             tts_model (str): The TTS model to be used for text-to-speech.
         """
+
+        # Selects first GPU by default, otherwise use CPU
+        device_id = 0 if torch.cuda.is_available() else None
+
+        # Create pipeline
         self.transcriber = pipeline(
             "automatic-speech-recognition",  # See [1]
             model=tts_model,
-            framework="tf",
-            device=None,  # Use CPU by default, set to 0 for GPU
+            framework="pt",  # Using PyTorch
+            device=device_id,
         )
 
     def _transcribe(self, sample_rate: int, raw_data: np.array) -> str:
