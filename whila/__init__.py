@@ -1,13 +1,8 @@
 import logging.config
-import platform
-from pathlib import Path
 
-import click
-import ollama
 import yaml
-from ollama import ResponseError
 
-from whila.textify import Textifier
+from whila.textify import *
 
 # Load logging configuration
 with open("logging_config.yaml", "r") as f:
@@ -16,18 +11,25 @@ with open("logging_config.yaml", "r") as f:
 
 logger = logging.getLogger("whila")
 
-if __name__ == "__main__":
 
-    # Create textifier
-    txty = Textifier()
+class WhiLa:
+    def __init__(self, tts_model: str = DEFAULT_TTS_MODEL):
+        self.textifier = Textifier(tts_model)
+
+    def encode(self, value: str) -> str: ...
+
+    def decode(self, value: str) -> str: ...
+
+
+if __name__ == "__main__":
 
     # Setup gradio
     import gradio as gr
 
     gr.Interface(
-        fn=txty.textify,
-        inputs=gr.Audio(source="microphone", type="numpy"),
-        outputs=gr.Textbox(),
+        txty.to_gradio(),
+        gr.Audio(sources=["microphone"]),
+        "text",
     ).launch()
 
 # def _get_host_os():
