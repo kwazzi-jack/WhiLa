@@ -8,20 +8,13 @@ readme = "README.md"
 [tool.poetry.dependencies]
 python = "^3.10"
 whisper = "1.1.10"
-llama-index = "0.10.36"
-click = "8.0.0"
-pyyaml = "6.0.1"
 transformers = "4.40.2"
-cuda-python = "12.4.0"
 torch = "2.3.0"
+gradio = "4.31.1"
 
 [tool.poetry.dev-dependencies]
-gradio = "^4.31.1"
 modal = "^0.62.179"
 
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
-
-[tool.poetry.scripts]
-whila-setup = "whila:setup"
