@@ -2,15 +2,14 @@ from pathlib import Path
 
 import gradio
 import modal
-import numpy as np
 
 VOLUME = {"/whila": modal.Volume.from_name("whila-volume")}
 MODEL_DIR = Path("/whila/models")
 TTS_MODEL = "openai/whisper-medium.en"
 TTL_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"
-PIP_PACKAGES = ["vllm", "torch", "transformers"]
+PIP_PACKAGES = ["vllm", "torch", "transformers", "gradio"]
 PY_VERSION = "3.10"
-IMAGE = modal.Image.debian_slim(python_version=PY_VERSION)
+IMAGE = modal.Image.debian_slim(python_version=PY_VERSION).pip_install(*PIP_PACKAGES)
 GPU_CONFIG = modal.gpu.A10G()
 
 EXTRACT_TEMPLATE = r"""
@@ -95,83 +94,63 @@ app = modal.App(
     volumes=VOLUME,
 )
 
-with IMAGE.imports():
-    import vllm
-
 
 # refactor this into a separate file, modalize
 @app.cls(gpu=GPU_CONFIG)
 class Latexifier:  # use vllm probably
-    extract_template = EXTRACT_TEMPLATE
-    convert_template = CONVERT_TEMPLATE
-    model_params = vllm.SamplingParams(temperature=0.1, top_p=0.95)
 
     @modal.enter()
     def load_model(self):
+        import vllm
+
+        self.extract_template = EXTRACT_TEMPLATE
+        self.convert_template = CONVERT_TEMPLATE
+        self.model_params = vllm.SamplingParams(temperature=0.1, top_p=0.95)
+        # Create TTL LLM agent
         self.ttl = vllm.LLM(TTL_MODEL, tensor_parallel_size=GPU_CONFIG.count)
+
+        # Save point for `align`
         self.save = ""
-        print("entering")
+
         # see: https://github.com/modal-labs/modal-examples/blob/0ca5778741d23a8c0b81ae78c9fb8cb6e9f9ac9e/06_gpu_and_ml/llm-serving/vllm_inference.py#L108-L111
-        pass
 
     def extractor(self, text):
+        """Format extractor text to get command and value"""
         return self.extract_template.format(input_text=text)
 
     def converter(self, value):
+        """Format converter text to for converting a value to latex"""
         return self.convert_template.format(value_text=value)
 
-    def identify(self, command, latex):
-        match command.lower():
-            case "equation":
-                return r"\begin{equation}\n\t{contents}\n\end{equation}".format(
-                    contents=latex
-                )
-            case "align":
-                self.save = r"\begin{align}\n\t{contents}".format(
-                    contents=latex + r"{contents}"
-                )
-                return self.save
-            case "next":
-
-                if "contents" not in self.save:
-                    raise ValueError(
-                        "No align text identified. Please start with 'align'"
-                    )
-
-                self.save = self.save.format(contents=latex + r"\\\n\t{contents}")
-                return self.save
-            case "end":
-
-                if "contents" not in self.save:
-                    raise ValueError(
-                        "No align text identified. Please start with 'align'"
-                    )
-                output = self.save.format(contents=latex + r".\n\end{align}")
-                self.save = ""
-                return output
-            case _:
-                raise ValueError(f"Unknown command type '{command}'")
-
     def _align_symbols(latex, mode="="):
+        """Adds alignment characters to an align environment."""
+
         match mode.lower():
             case "=":
                 return latex.replace(r"=", r"&=")
             case "left" | "l":
                 return latex.replace(r"\t", r"\t&")
             case "right" | "r":
-                return latex.replace(r"\n", r"&\n")
+                return latex.replace(r"\end", r"&\end").replace(r"\n", r"&\n")
 
     def _get_text_from_value(self, text):
+        """Extract the value out of the formatted output from LLM"""
         return text.split("=")[1][1:-1]
 
     def cleanup(self, exec_type, output):
+        """Clean-up the output from the LLM based on the execution
+        type."""
+
+        # If an error was produced, raise it
         if "ERROR" in output:
             error = self._get_text_from_value(output).capitalize()
             raise ValueError(f"Error from extractor: '{error}'")
 
+        # Check if it contains a command or a value field
         if "COMMAND" not in output and "VALUE" not in output:
             raise ValueError(f"Cannot find command or value in '{output}'")
 
+        # Output is from extractor, return command and value
         if exec_type == "extract":
             command, value = output.split(",")
             command, value = command.strip(), value.strip()
@@ -182,21 +161,73 @@ class Latexifier:  # use vllm probably
             command = self._get_text_from_value(command)
             value = self._get_text_from_value(value)
             return command, value
+
+        # Output is from converter, return latex
         elif exec_type == "convert":
             return self._get_text_from_value(value)
 
+        # Unknown executor type
         else:
             raise ValueError(f"Unknown executor type `{exec_type}`")
 
+    @modal.method()
     def extract(self, text):
+        """Perform extraction of the command and value from the LLM based on
+        input audio."""
         extractor = self.extractor(text)
         output = self.ttl.generate(extractor, sampling_params=self.model_params)
         return self.cleanup("extract", output)
 
+    @modal.method()
     def convert(self, value):
+        """Perform conversion of the value from the extractor using the LLM
+        to get the corresponding latex."""
         converter = self.converter(value)
         output = self.ttl.generate(converter, sampling_params=self.model_params)
         return self.cleanup("convert", output)
+
+    def finalize(self, command, latex):
+        """Based on the command, identify and format how the latex should be wrapped"""
+        match command.lower():
+
+            # Equation environment
+            case "equation":
+                return r"\begin{equation}\n\t{contents}\n\end{equation}".format(
+                    contents=latex
+                )
+
+            # Align (start) environment
+            case "align":
+                self.save = r"\begin{align}\n\t{contents}".format(
+                    contents=latex + r"{contents}"
+                )
+                return self.save
+
+            # Align (next) environment
+            case "next":
+
+                if "contents" not in self.save:
+                    raise ValueError(
+                        "No align text identified. Please start with 'align'"
+                    )
+
+                self.save = self.save.format(contents=latex + r"\\\n\t{contents}")
+                return self.save
+
+            # Align (end) environment
+            case "end":
+
+                if "contents" not in self.save:
+                    raise ValueError(
+                        "No align text identified. Please start with 'align'"
+                    )
+                output = self.save.format(contents=latex + r".\n\end{align}")
+                self.save = ""
+                return output
+
+            # Error: Unknown environment
+            case _:
+                raise ValueError(f"Unknown command type '{command}'")
 
     @modal.method()
     def inference(self, text):
@@ -204,99 +235,98 @@ class Latexifier:  # use vllm probably
 
         command, value = self.extract(text)
         latex = self.convert(value)
-        output = self.identify(command)
+        output = self.finalize(command, latex)
 
-        return text
+        return output
 
 
-@app.cls(gpu="a10g")
-class Textifier:
+# @app.cls(gpu="a10g")
+# class Textifier:
 
-    def __init__(self, tts_model: str = _DEFAULT_TTS_MODEL):
-        """
-        Initializes the Textifier object with a specified TTS model.
+#     def __init__(self, tts_model: str):
+#         """
+#         Initializes the Textifier object with a specified TTS model.
 
-        Parameters:
-            tts_model (str): The TTS model to be used for text-to-speech.
-        """
+#         Parameters:
+#             tts_model (str): The TTS model to be used for text-to-speech.
+#         """
 
-        # Selects first GPU by default, otherwise use CPU
-        device_id = 0 if torch.cuda.is_available() else None
+#         # Selects first GPU by default, otherwise use CPU
+#         device_id = 0 if torch.cuda.is_available() else None
 
-        # Create pipeline
-        self.transcriber = transformers.pipeline(
-            "automatic-speech-recognition",  # See [1]
-            model=tts_model,
-            framework="pt",  # Using PyTorch
-            device=device_id,
-        )
+#         # Create pipeline
+#         self.transcriber = transformers.pipeline(
+#             "automatic-speech-recognition",  # See [1]
+#             model=tts_model,
+#             framework="pt",  # Using PyTorch
+#             device=device_id,
+#         )
 
-    def _transcribe(self, sample_rate: int, raw_data: np.array) -> str:
-        """
-        Transcribe the raw audio data using the provided sample rate and return the transcribed text.
+#     def _transcribe(self, sample_rate: int, raw_data: np.array) -> str:
+#         """
+#         Transcribe the raw audio data using the provided sample rate and return the transcribed text.
 
-        Parameters:
-            sample_rate (int): The sample rate of the audio data.
-            raw_data (np.array): The raw audio data to transcribe.
+#         Parameters:
+#             sample_rate (int): The sample rate of the audio data.
+#             raw_data (np.array): The raw audio data to transcribe.
 
-        Returns:
-            str: The transcribed text from the audio data.
-        """
-        try:
-            result = self.transcriber({"sampling_rate": sample_rate, "raw": raw_data})
-            return result["text"]
-        except Exception as e:
-            print(f"Error during transcription: {e}")
-            return ""
+#         Returns:
+#             str: The transcribed text from the audio data.
+#         """
+#         try:
+#             result = self.transcriber({"sampling_rate": sample_rate, "raw": raw_data})
+#             return result["text"]
+#         except Exception as e:
+#             print(f"Error during transcription: {e}")
+#             return ""
 
-    def _normalise(self, raw_data):
-        """
-        A function to normalise audio data by maximum value.
+#     def _normalise(self, raw_data):
+#         """
+#         A function to normalise audio data by maximum value.
 
-        Parameters:
-            raw_data: The raw audio data to be normalised.
+#         Parameters:
+#             raw_data: The raw audio data to be normalised.
 
-        Returns:
-            The normalised raw audio data.
-        """
-        raw_data = raw_data.astype(np.float32)
-        if np.max(np.abs(raw_data)) != 0:
-            raw_data /= np.max(np.abs(raw_data))
-        return raw_data
+#         Returns:
+#             The normalised raw audio data.
+#         """
+#         raw_data = raw_data.astype(np.float32)
+#         if np.max(np.abs(raw_data)) != 0:
+#             raw_data /= np.max(np.abs(raw_data))
+#         return raw_data
 
-    def textify(self, raw_audio):
-        """
-        Transcribe the raw audio data using the provided sample rate and return the transcribed text.
+#     def textify(self, raw_audio):
+#         """
+#         Transcribe the raw audio data using the provided sample rate and return the transcribed text.
 
-        Parameters:
-            raw_audio: A tuple containing the sample rate and raw audio data.
+#         Parameters:
+#             raw_audio: A tuple containing the sample rate and raw audio data.
 
-        Returns:
-            The transcribed text from the audio data.
-        """
-        sample_rate, raw_data = raw_audio
-        raw_data = self._normalise(raw_data)
-        return self._transcribe(sample_rate, raw_data)
+#         Returns:
+#             The transcribed text from the audio data.
+#         """
+#         sample_rate, raw_data = raw_audio
+#         raw_data = self._normalise(raw_data)
+#         return self._transcribe(sample_rate, raw_data)
 
-    def to_gradio(self):
-        """
-        A function to convert the Textifier object to a Gradio interface compatible function.
-        """
-        return lambda raw_audio: self.textify(raw_audio)
+#     def to_gradio(self):
+#         """
+#         A function to convert the Textifier object to a Gradio interface compatible function.
+#         """
+#         return lambda raw_audio: self.textify(raw_audio)
 
 
 class GradioApp:
 
     def __init__(self):
-        self.textifier = Textifier()
         self.latexifier = modal.Cls.lookup("whila-app", "Latexifer")
         self._create_gradio_interface()
 
     def _create_gradio_interface(self):
         self.interface = gradio.Interface(
             self._audio_to_latex(),
-            gradio.Audio(sources=["microphone"]),
-            "text",
+            inputs=["text"],
+            outputs=["text"],
         )
 
     def _audio_to_latex(self, audio):
@@ -312,7 +342,14 @@ class GradioApp:
 
 @app.local_entrypoint()
 def main():
-    GradioApp().launch(share=True)
+    # GradioApp().launch(share=True)
+    latexifier = modal.Cls.lookup("whila-app", "Latexifier")
+
+    output = latexifier.inference.remote(
+        "equation cosine brackets of pie divided by two plus two theta close brackets"
+    )
+
+    print(output)
 
 
 # Footnotes:
