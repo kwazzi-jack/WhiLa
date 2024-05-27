@@ -16,6 +16,9 @@ vllm = "^0.4.2"
 [tool.poetry.dev-dependencies]
 modal = "^0.62.179"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.2.1"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
