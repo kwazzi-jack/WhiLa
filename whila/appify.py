@@ -1,16 +1,52 @@
+import os
+import time
 from pathlib import Path
 
 import gradio
 import modal
 
+
+def download_model_to_image(model_dir, model_name):
+    from huggingface_hub import snapshot_download
+    from transformers.utils import move_cache
+
+    os.makedirs(model_dir, exist_ok=True)
+
+    snapshot_download(
+        model_name,
+        local_dir=model_dir,
+        ignore_patterns=["*.pt", "*.bin"],  # Using safetensors
+        token=os.environ["HF_TOKEN"],
+    )
+    move_cache()
+
+
 VOLUME = {"/whila": modal.Volume.from_name("whila-volume")}
-MODEL_DIR = Path("/whila/models")
+MODEL_DIR = Path("/model")
 TTS_MODEL = "openai/whisper-medium.en"
 TTL_MODEL = "meta-llama/Meta-Llama-3-8B-Instruct"
-PIP_PACKAGES = ["vllm", "torch", "transformers", "gradio"]
+PIP_PACKAGES = [
+    "gradio",
+    "vllm==0.4.0.post1",
+    "torch==2.1.2",
+    "transformers==4.39.3",
+    "ray==2.10.0",
+    "hf-transfer==0.1.6",
+    "huggingface_hub==0.22.2",
+]
 PY_VERSION = "3.10"
-IMAGE = modal.Image.debian_slim(python_version=PY_VERSION).pip_install(*PIP_PACKAGES)
-GPU_CONFIG = modal.gpu.A10G()
+IMAGE = (
+    modal.Image.debian_slim(python_version=PY_VERSION)
+    .pip_install(*PIP_PACKAGES)
+    .env({"HF_HUB_ENABLE_HF_TRANSFER": "1"})
+    .run_function(
+        download_model_to_image,
+        timeout=60 * 20,
+        kwargs={"model_dir": MODEL_DIR, "model_name": TTL_MODEL},
+        secrets=[modal.Secret.from_name("Modal-to-HF-secret")],
+    )
+)
+GPU_CONFIG = modal.gpu.A10G(count=4)
 
 EXTRACT_TEMPLATE = r"""
 **Extraction Task:**
@@ -31,30 +67,30 @@ EXTRACT_TEMPLATE = r"""
 3. **Input and Output:**
    - Input will be provided in the format:
      ```
-     INPUT="<input_text>"
+     INPUT=<input_text>
      ```
    - Output should be structured as:
      ```
-     COMMAND="<command_identified>", VALUE="<value_identified>"
+     COMMAND=<command_identified>, VALUE=<value_identified>
      ```
    - If an invalid command or value is found, return the error in the format:
      ```
-     ERROR="<invalid_error>"
+     ERROR=<invalid_error>
      ```
 
 4. **Example Input:**
     ```
-    INPUT="equation uhm ex square with plus why is equal ah to ... zero"
+    INPUT=equation uhm ex square with plus why is equal ah to ... zero
     ```
 
 5. **Example Output:**
     ```
-    COMMAND="equation", VALUE="ex square plus why equal to zero"
+    COMMAND=equation, VALUE=ex square plus why equal to zero
     ```
 
 Given the above, here is the input:
 
-INPUT="{input_text}"
+INPUT={input_text}
 """
 
 CONVERT_TEMPLATE = r"""
@@ -63,7 +99,7 @@ CONVERT_TEMPLATE = r"""
 1. **Input:**
    - The input will be provided in the format:
      ```
-     VALUE="<value_text>"
+     VALUE=<value_text>
      ```
 
 2. **Output:**
@@ -75,7 +111,7 @@ CONVERT_TEMPLATE = r"""
 
 3. **Example Input:**
     ```
-    VALUE="sum of two to the power of eye calculated from eye equals one to big n"
+    VALUE=sum of two to the power of eye calculated from eye equals one to big n
     ```
 
 4. **Example Output:**
@@ -85,7 +121,7 @@ CONVERT_TEMPLATE = r"""
 
 Given the above, here is the input:
 
-VALUE="{value_text}"
+VALUE={value_text}
 """
 
 app = modal.App(
@@ -96,18 +132,28 @@ app = modal.App(
 
 
 # refactor this into a separate file, modalize
-@app.cls(gpu=GPU_CONFIG)
+@app.cls(gpu=GPU_CONFIG, secrets=[modal.Secret.from_name("Modal-to-HF-secret")])
 class Latexifier:  # use vllm probably
+    extract_template = EXTRACT_TEMPLATE
+    convert_template = CONVERT_TEMPLATE
 
     @modal.enter()
     def load_model(self):
+        import torch
         import vllm
 
-        self.extract_template = EXTRACT_TEMPLATE
-        self.convert_template = CONVERT_TEMPLATE
-        self.model_params = vllm.SamplingParams(temperature=0.1, top_p=0.95)
+        self.model_params = vllm.SamplingParams(
+            temperature=0.1, top_p=0.95, max_tokens=200
+        )
         # Create TTL LLM agent
-        self.ttl = vllm.LLM(TTL_MODEL, tensor_parallel_size=GPU_CONFIG.count)
+        self.ttl = vllm.LLM(
+            MODEL_DIR,
+            dtype=torch.bfloat16,
+            tensor_parallel_size=GPU_CONFIG.count,
+            gpu_memory_utilization=1.0,
+            enforce_eager=True,
+            max_num_seqs=32,
+        )
 
         # Save point for `align`
         self.save = ""
@@ -135,7 +181,7 @@ class Latexifier:  # use vllm probably
 
     def _get_text_from_value(self, text):
         """Extract the value out of the formatted output from LLM"""
-        return text.split("=")[1][1:-1]
+        return text.split("=")[1]
 
     def cleanup(self, exec_type, output):
         """Clean-up the output from the LLM based on the execution
@@ -183,7 +229,11 @@ class Latexifier:  # use vllm probably
         """Perform conversion of the value from the extractor using the LLM
         to get the corresponding latex."""
         converter = self.converter(value)
+        t0 = time.perf_counter()
         output = self.ttl.generate(converter, sampling_params=self.model_params)
+        t1 = time.perf_counter()
+        print(f"Time taken: {t1 - t0}")
+        print(f"Avg. tokens per sec.: {len(output.outputs[0].token_ids)}")
         return self.cleanup("convert", output)
 
     def finalize(self, command, latex):
@@ -233,8 +283,8 @@ class Latexifier:  # use vllm probably
     def inference(self, text):
         # see: https://github.com/modal-labs/modal-examples/blob/0ca5778741d23a8c0b81ae78c9fb8cb6e9f9ac9e/06_gpu_and_ml/llm-serving/vllm_inference.py#L118-L131
 
-        command, value = self.extract(text)
-        latex = self.convert(value)
+        command, value = self.extract.local(text)
+        latex = self.convert.local(value)
         output = self.finalize(command, latex)
 
         return output
