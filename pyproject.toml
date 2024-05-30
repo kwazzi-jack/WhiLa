@@ -10,6 +10,7 @@ python = "^3.10"
 modal = "^0.62.179"
 gradio = "^4.31.5"
 openai = "^1.30.4"
+fastapi = "^0.111.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.2.1"

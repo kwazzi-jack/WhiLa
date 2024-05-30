@@ -448,7 +448,19 @@ class Textifier:
         return output
 
 
-@app.local_entrypoint()
+from fastapi import FastAPI
+
+web_app = FastAPI()
+
+
+@app.function(
+    image=IMAGE,
+    volumes=VOLUME,
+    gpu=GPU_CONFIG,
+    concurrency_limit=1,
+    container_idle_timeout=600,
+)
+@modal.asgi_app()
 def main():
     textifier = modal.Cls.lookup("whila-app", "Textifier")
     latexifier = modal.Cls.lookup("whila-app", "Latexifier")
@@ -517,8 +529,14 @@ def main():
         with gradio.Row():
             interface.render()
 
+    from gradio.routes import mount_gradio_app
+
     # Launch the Gradio app
-    demo.launch(share=True)
+    return mount_gradio_app(
+        app=web_app,
+        blocks=demo,
+        path="/",
+    )
 
 
 # Footnotes:
